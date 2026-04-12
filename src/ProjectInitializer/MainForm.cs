@@ -269,68 +269,71 @@ public sealed class MainForm : Form
             var selectedModules = _rows.Where(r => r.Include).ToList();
             var projectRoot = Path.Combine(parentPath, projectName);
 
-            AppendLog($"Target project path: {projectRoot}");
-
-            if (Directory.Exists(projectRoot) && Directory.EnumerateFileSystemEntries(projectRoot).Any())
+            await Task.Run(() =>
             {
-                throw new InvalidOperationException("Target directory already exists and is not empty.");
-            }
+                AppendLog($"Target project path: {projectRoot}");
 
-            Directory.CreateDirectory(projectRoot);
-            WriteBaseFiles(projectRoot, projectName);
-
-            RunOrThrow(GitHelper.RunGit("init -b main", projectRoot), "git init", projectRoot);
-
-            if (createRepo)
-            {
-                AppendLog("Creating GitHub remote repository...");
-                var ghCmd = $"repo create {owner}/{projectName} --{visibility} --confirm";
-                RunOrThrow(GitHelper.RunGh(ghCmd, projectRoot), ghCmd, projectRoot);
-
-                var remoteUrl = $"https://github.com/{owner}/{projectName}.git";
-                var addOriginResult = GitHelper.RunGit($"remote add origin {GitHelper.EscapeArg(remoteUrl)}", projectRoot);
-                if (!addOriginResult.IsSuccess && !addOriginResult.StdErr.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                if (Directory.Exists(projectRoot) && Directory.EnumerateFileSystemEntries(projectRoot).Any())
                 {
-                    throw new InvalidOperationException($"Failed to add origin: {addOriginResult.StdErr}");
+                    throw new InvalidOperationException("Target directory already exists and is not empty.");
                 }
-            }
 
-            foreach (var module in selectedModules)
-            {
-                var baseBranch = string.IsNullOrWhiteSpace(module.Branch) ? "main" : module.Branch.Trim();
-                AppendLog($"Adding submodule: {module.Name} ({baseBranch})");
+                Directory.CreateDirectory(projectRoot);
+                WriteBaseFiles(projectRoot, projectName);
 
-                var addCmd = $"submodule add -b {GitHelper.EscapeArg(baseBranch)} {GitHelper.EscapeArg(module.Url)} {GitHelper.EscapeArg(module.Path)}";
-                RunOrThrow(GitHelper.RunGit(addCmd, projectRoot), addCmd, projectRoot);
+                RunOrThrow(GitHelper.RunGit("init -b main", projectRoot), "git init", projectRoot);
 
-                if (!string.IsNullOrWhiteSpace(module.NewBranch))
+                if (createRepo)
                 {
-                    var newBranch = module.NewBranch.Trim();
-                    var modulePath = Path.Combine(projectRoot, module.Path.Replace('/', Path.DirectorySeparatorChar));
-                    AppendLog($"Creating new branch for {module.Name}: {newBranch} from {baseBranch}");
+                    AppendLog("Creating GitHub remote repository...");
+                    var ghCmd = $"repo create {owner}/{projectName} --{visibility} --confirm";
+                    RunOrThrow(GitHelper.RunGh(ghCmd, projectRoot), ghCmd, projectRoot);
 
-                    RunOrThrow(GitHelper.RunGit($"fetch origin {GitHelper.EscapeArg(baseBranch)}", modulePath), "fetch base branch", modulePath);
-                    RunOrThrow(GitHelper.RunGit($"checkout -B {GitHelper.EscapeArg(newBranch)} origin/{baseBranch}", modulePath), "checkout new branch", modulePath);
-
-                    var pushResult = GitHelper.RunGit($"push -u origin {GitHelper.EscapeArg(newBranch)}", modulePath);
-                    if (!pushResult.IsSuccess)
+                    var remoteUrl = $"https://github.com/{owner}/{projectName}.git";
+                    var addOriginResult = GitHelper.RunGit($"remote add origin {GitHelper.EscapeArg(remoteUrl)}", projectRoot);
+                    if (!addOriginResult.IsSuccess && !addOriginResult.StdErr.Contains("already exists", StringComparison.OrdinalIgnoreCase))
                     {
-                        AppendLog($"WARN: push new branch failed for {module.Name}: {pushResult.StdErr}");
+                        throw new InvalidOperationException($"Failed to add origin: {addOriginResult.StdErr}");
                     }
                 }
-            }
 
-            RunOrThrow(GitHelper.RunGit("add .", projectRoot), "git add", projectRoot);
-            var commitResult = GitHelper.RunGit("commit -m \"Initial project setup\"", projectRoot);
-            if (!commitResult.IsSuccess && !commitResult.StdErr.Contains("nothing to commit", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"git commit failed: {commitResult.StdErr}");
-            }
+                foreach (var module in selectedModules)
+                {
+                    var baseBranch = string.IsNullOrWhiteSpace(module.Branch) ? "main" : module.Branch.Trim();
+                    AppendLog($"Adding submodule: {module.Name} ({baseBranch})");
 
-            if (createRepo)
-            {
-                RunOrThrow(GitHelper.RunGit("push -u origin main", projectRoot), "git push", projectRoot);
-            }
+                    var addCmd = $"submodule add -b {GitHelper.EscapeArg(baseBranch)} {GitHelper.EscapeArg(module.Url)} {GitHelper.EscapeArg(module.Path)}";
+                    RunOrThrow(GitHelper.RunGit(addCmd, projectRoot), addCmd, projectRoot);
+
+                    if (!string.IsNullOrWhiteSpace(module.NewBranch))
+                    {
+                        var newBranch = module.NewBranch.Trim();
+                        var modulePath = Path.Combine(projectRoot, module.Path.Replace('/', Path.DirectorySeparatorChar));
+                        AppendLog($"Creating new branch for {module.Name}: {newBranch} from {baseBranch}");
+
+                        RunOrThrow(GitHelper.RunGit($"fetch origin {GitHelper.EscapeArg(baseBranch)}", modulePath), "fetch base branch", modulePath);
+                        RunOrThrow(GitHelper.RunGit($"checkout -B {GitHelper.EscapeArg(newBranch)} origin/{baseBranch}", modulePath), "checkout new branch", modulePath);
+
+                        var pushResult = GitHelper.RunGit($"push -u origin {GitHelper.EscapeArg(newBranch)}", modulePath);
+                        if (!pushResult.IsSuccess)
+                        {
+                            AppendLog($"WARN: push new branch failed for {module.Name}: {pushResult.StdErr}");
+                        }
+                    }
+                }
+
+                RunOrThrow(GitHelper.RunGit("add .", projectRoot), "git add", projectRoot);
+                var commitResult = GitHelper.RunGit("commit -m \"Initial project setup\"", projectRoot);
+                if (!commitResult.IsSuccess && !commitResult.StdErr.Contains("nothing to commit", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"git commit failed: {commitResult.StdErr}");
+                }
+
+                if (createRepo)
+                {
+                    RunOrThrow(GitHelper.RunGit("push -u origin main", projectRoot), "git push", projectRoot);
+                }
+            });
 
             AppendLog("Initialization completed successfully.");
             MessageBox.Show("Project initialization completed.", "Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
