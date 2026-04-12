@@ -1,0 +1,385 @@
+using Shared;
+using System.ComponentModel;
+
+namespace TagManager;
+
+public sealed class MainForm : Form
+{
+    private readonly TextBox _txtRoot = new();
+    private readonly TextBox _txtTag = new();
+    private readonly DataGridView _grid = new();
+    private readonly RichTextBox _log = new();
+
+    private readonly BindingList<RepoRow> _rows = new();
+
+    private Button _btnScan = null!;
+    private Button _btnTag = null!;
+    private Button _btnRestore = null!;
+    private Button _btnUpdateTag = null!;
+
+    public MainForm()
+    {
+        Text = "prj-initer / Tag Manager";
+        Width = 1300;
+        Height = 820;
+        StartPosition = FormStartPosition.CenterScreen;
+
+        BuildUi();
+        _txtRoot.Text = @"I:\project\aisoft\driver_man";
+        ScanRepositories();
+    }
+
+    private void BuildUi()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 4,
+            ColumnCount = 1,
+            Padding = new Padding(8)
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 65));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
+        Controls.Add(root);
+
+        var top = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true
+        };
+
+        top.Controls.Add(new Label { Text = "Workspace Root", AutoSize = true, Padding = new Padding(0, 8, 4, 0) });
+
+        _txtRoot.Width = 640;
+        top.Controls.Add(_txtRoot);
+
+        _btnScan = new Button { Text = "Scan", Width = 100, Height = 30 };
+        _btnScan.Click += (_, _) => ScanRepositories();
+        top.Controls.Add(_btnScan);
+
+        root.Controls.Add(top, 0, 0);
+
+        var op = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true
+        };
+
+        op.Controls.Add(new Label { Text = "Tag Content", AutoSize = true, Padding = new Padding(0, 8, 4, 0) });
+        _txtTag.Width = 300;
+        _txtTag.Text = "DM-v1.0.0.0";
+        op.Controls.Add(_txtTag);
+
+        _btnTag = new Button { Text = "Create Tags", Width = 120, Height = 30 };
+        _btnRestore = new Button { Text = "Restore To Tag", Width = 130, Height = 30 };
+        _btnUpdateTag = new Button { Text = "Update Tags", Width = 120, Height = 30 };
+
+        _btnTag.Click += async (_, _) => await CreateTagsAsync();
+        _btnRestore.Click += async (_, _) => await RestoreToTagAsync();
+        _btnUpdateTag.Click += async (_, _) => await UpdateTagsAsync();
+
+        op.Controls.Add(_btnTag);
+        op.Controls.Add(_btnRestore);
+        op.Controls.Add(_btnUpdateTag);
+
+        root.Controls.Add(op, 0, 1);
+
+        _grid.Dock = DockStyle.Fill;
+        _grid.AutoGenerateColumns = false;
+        _grid.AllowUserToAddRows = false;
+        _grid.AllowUserToDeleteRows = false;
+        _grid.RowHeadersVisible = false;
+        _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _grid.DataSource = _rows;
+
+        _grid.Columns.Add(new DataGridViewCheckBoxColumn
+        {
+            HeaderText = "Use",
+            DataPropertyName = nameof(RepoRow.Use),
+            Width = 50
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Repo",
+            DataPropertyName = nameof(RepoRow.Name),
+            Width = 220,
+            ReadOnly = true
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Path",
+            DataPropertyName = nameof(RepoRow.Path),
+            Width = 360,
+            ReadOnly = true
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Branch",
+            DataPropertyName = nameof(RepoRow.Branch),
+            Width = 130,
+            ReadOnly = true
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "HEAD",
+            DataPropertyName = nameof(RepoRow.Head),
+            Width = 260,
+            ReadOnly = true
+        });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Remote",
+            DataPropertyName = nameof(RepoRow.Remote),
+            Width = 360,
+            ReadOnly = true
+        });
+
+        root.Controls.Add(_grid, 0, 2);
+
+        _log.Dock = DockStyle.Fill;
+        _log.ReadOnly = true;
+        _log.Font = new Font("Consolas", 10);
+        root.Controls.Add(_log, 0, 3);
+    }
+
+    private void ScanRepositories()
+    {
+        _rows.Clear();
+
+        var rootPath = _txtRoot.Text.Trim();
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            AppendLog($"Root directory not found: {rootPath}");
+            return;
+        }
+
+        AddRepoRow("driver_man", rootPath);
+
+        var submodules = GitHelper.ParseGitModules(rootPath);
+        foreach (var module in submodules)
+        {
+            var subPath = Path.Combine(rootPath, module.Path.Replace('/', Path.DirectorySeparatorChar));
+            if (!Directory.Exists(subPath))
+            {
+                AppendLog($"Skip missing submodule path: {subPath}");
+                continue;
+            }
+
+            AddRepoRow(module.Name, subPath);
+        }
+
+        AppendLog($"Scan complete. Loaded {_rows.Count} repositories.");
+    }
+
+    private void AddRepoRow(string name, string path)
+    {
+        _rows.Add(new RepoRow
+        {
+            Use = true,
+            Name = name,
+            Path = path,
+            Branch = GitHelper.GetCurrentBranch(path),
+            Head = GitHelper.GetHeadShort(path),
+            Remote = GitHelper.GetRemoteUrl(path)
+        });
+    }
+
+    private async Task CreateTagsAsync()
+    {
+        await RunWithUiLock(async () =>
+        {
+            var tag = GetTagOrThrow();
+            var selected = _rows.Where(r => r.Use).ToList();
+
+            await Task.Run(() =>
+            {
+                foreach (var repo in selected)
+                {
+                    AppendLog($"[{repo.Name}] create tag {tag}");
+                    RunOrThrow(GitHelper.RunGit($"tag {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "create tag");
+                    RunOrThrow(GitHelper.RunGit($"push origin {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "push tag");
+                }
+            });
+
+            AppendLog("Create tags completed.");
+        });
+    }
+
+    private async Task RestoreToTagAsync()
+    {
+        await RunWithUiLock(async () =>
+        {
+            var tag = GetTagOrThrow();
+            var selected = _rows.Where(r => r.Use).ToList();
+
+            await Task.Run(() =>
+            {
+                foreach (var repo in selected)
+                {
+                    AppendLog($"[{repo.Name}] checkout {tag}");
+                    RunOrThrow(GitHelper.RunGit("fetch --tags", repo.Path), repo.Name, "fetch tags");
+                    RunOrThrow(GitHelper.RunGit($"checkout {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "checkout tag");
+                }
+            });
+
+            AppendLog("Restore completed.");
+            BeginInvoke(ScanRepositories);
+        });
+    }
+
+    private async Task UpdateTagsAsync()
+    {
+        await RunWithUiLock(async () =>
+        {
+            var tag = GetTagOrThrow();
+            var selected = _rows.Where(r => r.Use).ToList();
+
+            await Task.Run(() =>
+            {
+                foreach (var repo in selected)
+                {
+                    AppendLog($"[{repo.Name}] update tag {tag}");
+
+                    var deleteLocal = GitHelper.RunGit($"tag -d {GitHelper.EscapeArg(tag)}", repo.Path);
+                    if (!deleteLocal.IsSuccess)
+                    {
+                        AppendLog($"[{repo.Name}] local delete skipped: {deleteLocal.StdErr}");
+                    }
+
+                    var deleteRemote = GitHelper.RunGit($"push origin :refs/tags/{tag}", repo.Path);
+                    if (!deleteRemote.IsSuccess)
+                    {
+                        AppendLog($"[{repo.Name}] remote delete skipped: {deleteRemote.StdErr}");
+                    }
+
+                    RunOrThrow(GitHelper.RunGit($"tag {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "recreate tag");
+                    RunOrThrow(GitHelper.RunGit($"push origin {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "push tag");
+                }
+            });
+
+            AppendLog("Update tags completed.");
+        });
+    }
+
+    private string GetTagOrThrow()
+    {
+        var tag = _txtTag.Text.Trim();
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            throw new InvalidOperationException("Tag content is required.");
+        }
+
+        return tag;
+    }
+
+    private void RunOrThrow(CommandResult result, string repoName, string operation)
+    {
+        if (!result.IsSuccess)
+        {
+            throw new InvalidOperationException($"[{repoName}] {operation} failed: {result.StdErr}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.StdOut))
+        {
+            AppendLog($"[{repoName}] {result.StdOut}");
+        }
+    }
+
+    private async Task RunWithUiLock(Func<Task> action)
+    {
+        SetUiEnabled(false);
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"ERROR: {ex.Message}");
+            MessageBox.Show(ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            SetUiEnabled(true);
+        }
+    }
+
+    private void SetUiEnabled(bool enabled)
+    {
+        _btnScan.Enabled = enabled;
+        _btnTag.Enabled = enabled;
+        _btnRestore.Enabled = enabled;
+        _btnUpdateTag.Enabled = enabled;
+        _grid.Enabled = enabled;
+    }
+
+    private void AppendLog(string message)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => AppendLog(message));
+            return;
+        }
+
+        _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        _log.ScrollToCaret();
+    }
+
+    private sealed class RepoRow : INotifyPropertyChanged
+    {
+        private bool _use;
+        private string _name = string.Empty;
+        private string _path = string.Empty;
+        private string _branch = string.Empty;
+        private string _head = string.Empty;
+        private string _remote = string.Empty;
+
+        public bool Use
+        {
+            get => _use;
+            set { _use = value; OnPropertyChanged(nameof(Use)); }
+        }
+
+        public string Name
+        {
+            get => _name;
+            set { _name = value; OnPropertyChanged(nameof(Name)); }
+        }
+
+        public string Path
+        {
+            get => _path;
+            set { _path = value; OnPropertyChanged(nameof(Path)); }
+        }
+
+        public string Branch
+        {
+            get => _branch;
+            set { _branch = value; OnPropertyChanged(nameof(Branch)); }
+        }
+
+        public string Head
+        {
+            get => _head;
+            set { _head = value; OnPropertyChanged(nameof(Head)); }
+        }
+
+        public string Remote
+        {
+            get => _remote;
+            set { _remote = value; OnPropertyChanged(nameof(Remote)); }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        private void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+    }
+}
