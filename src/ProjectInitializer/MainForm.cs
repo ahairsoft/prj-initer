@@ -12,6 +12,7 @@ public sealed class MainForm : Form
     private readonly TextBox _txtParentPath = new();
     private readonly CheckBox _chkCreateGitHubRepo = new();
     private readonly ComboBox _cmbVisibility = new();
+    private readonly TextBox _txtBranchFilter = new();
     private readonly DataGridView _grid = new();
     private readonly RichTextBox _log = new();
     private readonly Dictionary<string, List<string>> _branchOptionsCache = new(StringComparer.OrdinalIgnoreCase);
@@ -21,6 +22,8 @@ public sealed class MainForm : Form
 
     private Button _btnReload = null!;
     private Button _btnRefreshBranches = null!;
+    private Button _btnApplyBranchFilter = null!;
+    private Button _btnClearBranchFilter = null!;
     private Button _btnResolveBranches = null!;
     private Button _btnInit = null!;
     private DataGridViewComboBoxColumn _colBaseBranch = null!;
@@ -91,17 +94,36 @@ public sealed class MainForm : Form
 
         _btnReload = new Button { Text = "Reload Submodules", Width = 160, Height = 30 };
         _btnRefreshBranches = new Button { Text = "Refresh Selected Branches", Width = 200, Height = 30 };
+        _btnApplyBranchFilter = new Button { Text = "Apply Filter", Width = 110, Height = 30 };
+        _btnClearBranchFilter = new Button { Text = "Clear", Width = 70, Height = 30 };
         _btnResolveBranches = new Button { Text = "Resolve Default Branch", Width = 180, Height = 30 };
         _btnInit = new Button { Text = "Start Initialization", Width = 180, Height = 32 };
 
+        _txtBranchFilter.Width = 170;
+        _txtBranchFilter.PlaceholderText = "Branch contains...";
+
         _btnReload.Click += (_, _) => ReloadSubmodules();
         _btnRefreshBranches.Click += async (_, _) => await RefreshSelectedRowsBranchesAsync();
+        _btnApplyBranchFilter.Click += (_, _) => ApplyBranchFilter();
+        _btnClearBranchFilter.Click += (_, _) => ClearBranchFilter();
+        _txtBranchFilter.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                ApplyBranchFilter();
+            }
+        };
         _btnResolveBranches.Click += async (_, _) => await ResolveDefaultBranchesAsync();
         _btnInit.Click += async (_, _) => await StartInitializationAsync();
 
         actionRow.Controls.Add(_chkCreateGitHubRepo);
         actionRow.Controls.Add(new Label { Text = "Visibility", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
         actionRow.Controls.Add(_cmbVisibility);
+        actionRow.Controls.Add(new Label { Text = "Branch Filter", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
+        actionRow.Controls.Add(_txtBranchFilter);
+        actionRow.Controls.Add(_btnApplyBranchFilter);
+        actionRow.Controls.Add(_btnClearBranchFilter);
         actionRow.Controls.Add(_btnReload);
         actionRow.Controls.Add(_btnRefreshBranches);
         actionRow.Controls.Add(_btnResolveBranches);
@@ -420,9 +442,31 @@ public sealed class MainForm : Form
     {
         _btnReload.Enabled = enabled;
         _btnRefreshBranches.Enabled = enabled;
+        _btnApplyBranchFilter.Enabled = enabled;
+        _btnClearBranchFilter.Enabled = enabled;
         _btnResolveBranches.Enabled = enabled;
         _btnInit.Enabled = enabled;
         _grid.Enabled = enabled;
+    }
+
+    private void ApplyBranchFilter()
+    {
+        RefreshBaseBranchCells();
+        var keyword = _txtBranchFilter.Text.Trim();
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            AppendLog("Branch filter cleared (show all). Use Clear for quick reset.");
+            return;
+        }
+
+        AppendLog($"Applied branch filter: '{keyword}'");
+    }
+
+    private void ClearBranchFilter()
+    {
+        _txtBranchFilter.Text = string.Empty;
+        RefreshBaseBranchCells();
+        AppendLog("Branch filter cleared.");
     }
 
     private void AppendLog(string message)
@@ -616,15 +660,23 @@ public sealed class MainForm : Form
         }
     }
 
-    private static void ApplyBaseBranchOptions(DataGridViewComboBoxCell cell, SubmoduleRow row, IReadOnlyCollection<string>? options)
+    private void ApplyBaseBranchOptions(DataGridViewComboBoxCell cell, SubmoduleRow row, IReadOnlyCollection<string>? options)
     {
         var selectedBranch = string.IsNullOrWhiteSpace(row.Branch) ? "main" : row.Branch.Trim();
+        var keyword = _txtBranchFilter.Text.Trim();
 
         var branchList = (options ?? Array.Empty<string>())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            branchList = branchList
+                .Where(x => x.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
         if (!branchList.Contains(selectedBranch, StringComparer.OrdinalIgnoreCase))
         {

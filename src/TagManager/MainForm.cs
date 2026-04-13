@@ -7,6 +7,7 @@ public sealed class MainForm : Form
 {
     private readonly TextBox _txtRoot = new();
     private readonly TextBox _txtTag = new();
+    private readonly CheckBox _chkDryRun = new();
     private readonly CheckBox _chkSafeRestore = new();
     private readonly TextBox _txtRestoreBranchPrefix = new();
     private readonly DataGridView _grid = new();
@@ -90,12 +91,17 @@ public sealed class MainForm : Form
         _chkSafeRestore.Checked = true;
         _chkSafeRestore.Width = 110;
 
+        _chkDryRun.Text = "Dry Run";
+        _chkDryRun.Checked = false;
+        _chkDryRun.Width = 90;
+
         _txtRestoreBranchPrefix.Width = 130;
         _txtRestoreBranchPrefix.Text = "restore";
 
         op.Controls.Add(_btnTag);
         op.Controls.Add(_btnRestore);
         op.Controls.Add(_btnUpdateTag);
+        op.Controls.Add(_chkDryRun);
         op.Controls.Add(_chkSafeRestore);
         op.Controls.Add(new Label { Text = "Branch Prefix", AutoSize = true, Padding = new Padding(8, 8, 4, 0) });
         op.Controls.Add(_txtRestoreBranchPrefix);
@@ -207,6 +213,7 @@ public sealed class MainForm : Form
         await RunWithUiLock(async () =>
         {
             var tag = GetTagOrThrow();
+            var dryRun = _chkDryRun.Checked;
             var selected = _rows.Where(r => r.Use).ToList();
 
             await Task.Run(() =>
@@ -214,8 +221,8 @@ public sealed class MainForm : Form
                 foreach (var repo in selected)
                 {
                     AppendLog($"[{repo.Name}] create tag {tag}");
-                    RunOrThrow(GitHelper.RunGit($"tag {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "create tag");
-                    RunOrThrow(GitHelper.RunGit($"push origin {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "push tag");
+                    ExecuteGit(repo, $"tag {GitHelper.EscapeArg(tag)}", "create tag", dryRun);
+                    ExecuteGit(repo, $"push origin {GitHelper.EscapeArg(tag)}", "push tag", dryRun);
                 }
             });
 
@@ -228,6 +235,7 @@ public sealed class MainForm : Form
         await RunWithUiLock(async () =>
         {
             var tag = GetTagOrThrow();
+            var dryRun = _chkDryRun.Checked;
             var safeRestore = _chkSafeRestore.Checked;
             var branchPrefix = (_txtRestoreBranchPrefix.Text ?? string.Empty).Trim();
             if (safeRestore && string.IsNullOrWhiteSpace(branchPrefix))
@@ -241,22 +249,27 @@ public sealed class MainForm : Form
             {
                 foreach (var repo in selected)
                 {
-                    EnsureCleanWorkingTree(repo);
-                    RunOrThrow(GitHelper.RunGit("fetch --tags", repo.Path), repo.Name, "fetch tags");
+                    if (!dryRun)
+                    {
+                        EnsureCleanWorkingTree(repo);
+                    }
+                    else
+                    {
+                        AppendLog($"[DRY-RUN][{repo.Name}] check clean working tree");
+                    }
+
+                    ExecuteGit(repo, "fetch --tags", "fetch tags", dryRun);
 
                     if (safeRestore)
                     {
                         var restoreBranch = BuildRestoreBranchName(branchPrefix, tag);
                         AppendLog($"[{repo.Name}] safe restore {tag} -> {restoreBranch}");
-                        RunOrThrow(
-                            GitHelper.RunGit($"checkout -B {GitHelper.EscapeArg(restoreBranch)} {GitHelper.EscapeArg(tag)}", repo.Path),
-                            repo.Name,
-                            "checkout restore branch");
+                        ExecuteGit(repo, $"checkout -B {GitHelper.EscapeArg(restoreBranch)} {GitHelper.EscapeArg(tag)}", "checkout restore branch", dryRun);
                     }
                     else
                     {
                         AppendLog($"[{repo.Name}] checkout {tag}");
-                        RunOrThrow(GitHelper.RunGit($"checkout {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "checkout tag");
+                        ExecuteGit(repo, $"checkout {GitHelper.EscapeArg(tag)}", "checkout tag", dryRun);
                     }
                 }
             });
@@ -271,6 +284,7 @@ public sealed class MainForm : Form
         await RunWithUiLock(async () =>
         {
             var tag = GetTagOrThrow();
+            var dryRun = _chkDryRun.Checked;
             var selected = _rows.Where(r => r.Use).ToList();
 
             await Task.Run(() =>
@@ -279,20 +293,10 @@ public sealed class MainForm : Form
                 {
                     AppendLog($"[{repo.Name}] update tag {tag}");
 
-                    var deleteLocal = GitHelper.RunGit($"tag -d {GitHelper.EscapeArg(tag)}", repo.Path);
-                    if (!deleteLocal.IsSuccess)
-                    {
-                        AppendLog($"[{repo.Name}] local delete skipped: {deleteLocal.StdErr}");
-                    }
-
-                    var deleteRemote = GitHelper.RunGit($"push origin :refs/tags/{tag}", repo.Path);
-                    if (!deleteRemote.IsSuccess)
-                    {
-                        AppendLog($"[{repo.Name}] remote delete skipped: {deleteRemote.StdErr}");
-                    }
-
-                    RunOrThrow(GitHelper.RunGit($"tag {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "recreate tag");
-                    RunOrThrow(GitHelper.RunGit($"push origin {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "push tag");
+                    ExecuteGit(repo, $"tag -d {GitHelper.EscapeArg(tag)}", "delete local tag", dryRun, ignoreFailure: true);
+                    ExecuteGit(repo, $"push origin :refs/tags/{tag}", "delete remote tag", dryRun, ignoreFailure: true);
+                    ExecuteGit(repo, $"tag {GitHelper.EscapeArg(tag)}", "recreate tag", dryRun);
+                    ExecuteGit(repo, $"push origin {GitHelper.EscapeArg(tag)}", "push tag", dryRun);
                 }
             });
 
@@ -340,6 +344,32 @@ public sealed class MainForm : Form
         if (!string.IsNullOrWhiteSpace(status.StdOut))
         {
             throw new InvalidOperationException($"[{repo.Name}] working tree not clean. Please commit/stash changes before restore.");
+        }
+    }
+
+    private void ExecuteGit(RepoRow repo, string args, string operation, bool dryRun, bool ignoreFailure = false)
+    {
+        if (dryRun)
+        {
+            AppendLog($"[DRY-RUN][{repo.Name}] git -C \"{repo.Path}\" {args}");
+            return;
+        }
+
+        var result = GitHelper.RunGit(args, repo.Path);
+        if (!result.IsSuccess)
+        {
+            if (ignoreFailure)
+            {
+                AppendLog($"[{repo.Name}] {operation} skipped: {result.StdErr}");
+                return;
+            }
+
+            throw new InvalidOperationException($"[{repo.Name}] {operation} failed: {result.StdErr}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.StdOut))
+        {
+            AppendLog($"[{repo.Name}] {result.StdOut}");
         }
     }
 

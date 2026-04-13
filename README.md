@@ -39,12 +39,19 @@ Examples:
 - Remote branches are loaded on-demand when clicking the dropdown cell.
 - Branch list is cached by remote URL.
 - `Refresh Selected Branches` button force-refreshes selected rows (or all included rows when no row selected).
+- `Branch Filter` supports keyword filtering (contains match, case-insensitive) for dropdown options.
+- Press Enter in filter box or click `Apply Filter`; click `Clear` to reset.
 
 ## TagManager Safe Restore
 - `Safe Restore` is enabled by default.
 - Restore operation checks each repository is clean first.
 - In safe mode, restore runs: `checkout -B <prefix>/<tag> <tag>` to avoid detached HEAD.
 - Branch prefix is configurable (default: `restore`).
+
+## TagManager Dry Run
+- `Dry Run` executes no git write operations and prints the exact commands to the log.
+- Supported for create tags, restore to tag, and update tags workflows.
+- Useful to verify impact before touching GitHub/Gitee repositories.
 
 ## Notes
 - Tag operations work for both GitHub and Gitee remotes because all operations use git CLI.
