@@ -9,8 +9,10 @@ public sealed class MainForm : Form
     private readonly TextBox _txtRoot = new();
     private readonly TextBox _txtTag = new();
     private readonly CheckBox _chkDryRun = new();
+    private readonly CheckBox _chkAutoExport = new();
     private readonly CheckBox _chkSafeRestore = new();
     private readonly TextBox _txtRestoreBranchPrefix = new();
+    private readonly NumericUpDown _numRetentionDays = new();
     private readonly DataGridView _grid = new();
     private readonly RichTextBox _log = new();
 
@@ -102,6 +104,15 @@ public sealed class MainForm : Form
         _chkDryRun.Checked = false;
         _chkDryRun.Width = 90;
 
+        _chkAutoExport.Text = "Auto Export";
+        _chkAutoExport.Checked = true;
+        _chkAutoExport.Width = 100;
+
+        _numRetentionDays.Width = 70;
+        _numRetentionDays.Minimum = 1;
+        _numRetentionDays.Maximum = 365;
+        _numRetentionDays.Value = 30;
+
         _txtRestoreBranchPrefix.Width = 130;
         _txtRestoreBranchPrefix.Text = "restore";
 
@@ -111,6 +122,9 @@ public sealed class MainForm : Form
         op.Controls.Add(_btnExportLog);
         op.Controls.Add(_btnClearLog);
         op.Controls.Add(_chkDryRun);
+        op.Controls.Add(_chkAutoExport);
+        op.Controls.Add(new Label { Text = "KeepDays", AutoSize = true, Padding = new Padding(4, 8, 2, 0) });
+        op.Controls.Add(_numRetentionDays);
         op.Controls.Add(_chkSafeRestore);
         op.Controls.Add(new Label { Text = "Branch Prefix", AutoSize = true, Padding = new Padding(8, 8, 4, 0) });
         op.Controls.Add(_txtRestoreBranchPrefix);
@@ -236,7 +250,7 @@ public sealed class MainForm : Form
             });
 
             AppendLog("Create tags completed.");
-        });
+        }, "create-tags");
     }
 
     private async Task RestoreToTagAsync()
@@ -285,7 +299,7 @@ public sealed class MainForm : Form
 
             AppendLog("Restore completed.");
             BeginInvoke(ScanRepositories);
-        });
+        }, "restore-tag");
     }
 
     private async Task UpdateTagsAsync()
@@ -310,7 +324,7 @@ public sealed class MainForm : Form
             });
 
             AppendLog("Update tags completed.");
-        });
+        }, "update-tags");
     }
 
     private string GetTagOrThrow()
@@ -420,22 +434,108 @@ public sealed class MainForm : Form
             return;
         }
 
-        var exportText = BuildExportContent();
+        var exportText = BuildExportContent("manual-export", null, dialog.FileName);
         File.WriteAllText(dialog.FileName, exportText, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         AppendLog($"Log exported: {dialog.FileName}");
         MessageBox.Show("Log exported successfully.", "Export Log", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private string BuildExportContent()
+    private void TryAutoExportLog(string? operationName, bool succeeded)
+    {
+        if (!_chkAutoExport.Checked || string.IsNullOrWhiteSpace(operationName))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_log.Text))
+        {
+            return;
+        }
+
+        try
+        {
+            var logsDir = ResolveLogsDirectory();
+            Directory.CreateDirectory(logsDir);
+
+            CleanupOldLogs(logsDir, (int)_numRetentionDays.Value);
+
+            var status = succeeded ? "ok" : "fail";
+            var fileName = $"tagmanager_auto_{operationName}_{status}_{DateTime.Now:yyyyMMdd_HHmmss}.log";
+            var fullPath = Path.Combine(logsDir, fileName);
+            var exportText = BuildExportContent($"auto:{operationName}", succeeded, fullPath);
+
+            File.WriteAllText(fullPath, exportText, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            AppendLog($"Auto-exported log: {fullPath}");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"WARN: auto export failed: {ex.Message}");
+        }
+    }
+
+    private static void CleanupOldLogs(string logsDir, int keepDays)
+    {
+        if (keepDays <= 0 || !Directory.Exists(logsDir))
+        {
+            return;
+        }
+
+        var threshold = DateTime.Now.AddDays(-keepDays);
+        foreach (var file in Directory.EnumerateFiles(logsDir, "*.log", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                var fi = new FileInfo(file);
+                if (fi.LastWriteTime < threshold)
+                {
+                    fi.Delete();
+                }
+            }
+            catch
+            {
+                // Ignore cleanup failures for locked or protected files.
+            }
+        }
+    }
+
+    private static string ResolveLogsDirectory()
+    {
+        var baseDir = new DirectoryInfo(AppContext.BaseDirectory);
+        var probe = baseDir;
+        while (probe != null)
+        {
+            if (File.Exists(Path.Combine(probe.FullName, "prj-initer.sln")))
+            {
+                return Path.Combine(probe.FullName, "logs");
+            }
+
+            probe = probe.Parent;
+        }
+
+        var currentDir = Environment.CurrentDirectory;
+        if (File.Exists(Path.Combine(currentDir, "prj-initer.sln")))
+        {
+            return Path.Combine(currentDir, "logs");
+        }
+
+        return Path.Combine(currentDir, "logs");
+    }
+
+    private string BuildExportContent(string trigger, bool? succeeded, string? targetPath)
     {
         var sb = new StringBuilder();
         var selectedRepos = _rows.Where(x => x.Use).Select(x => x.Name).OrderBy(x => x).ToList();
 
         sb.AppendLine("# TagManager Export Log");
         sb.AppendLine($"GeneratedAt: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($"Trigger: {trigger}");
+        sb.AppendLine($"OperationSucceeded: {(succeeded.HasValue ? succeeded.Value.ToString() : "N/A")}");
+        sb.AppendLine($"TargetPath: {targetPath ?? "N/A"}");
         sb.AppendLine($"WorkspaceRoot: {_txtRoot.Text.Trim()}");
         sb.AppendLine($"TagContent: {_txtTag.Text.Trim()}");
         sb.AppendLine($"DryRun: {_chkDryRun.Checked}");
+        sb.AppendLine($"AutoExport: {_chkAutoExport.Checked}");
+        sb.AppendLine($"LogRetentionDays: {(int)_numRetentionDays.Value}");
         sb.AppendLine($"SafeRestore: {_chkSafeRestore.Checked}");
         sb.AppendLine($"RestoreBranchPrefix: {_txtRestoreBranchPrefix.Text.Trim()}");
         sb.AppendLine($"SelectedRepoCount: {selectedRepos.Count}");
@@ -446,12 +546,14 @@ public sealed class MainForm : Form
         return sb.ToString();
     }
 
-    private async Task RunWithUiLock(Func<Task> action)
+    private async Task RunWithUiLock(Func<Task> action, string? operationName = null)
     {
+        var succeeded = false;
         SetUiEnabled(false);
         try
         {
             await action();
+            succeeded = true;
         }
         catch (Exception ex)
         {
@@ -460,6 +562,7 @@ public sealed class MainForm : Form
         }
         finally
         {
+            TryAutoExportLog(operationName, succeeded);
             SetUiEnabled(true);
         }
     }

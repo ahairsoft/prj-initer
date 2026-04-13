@@ -54,6 +54,10 @@ Examples:
 - Useful to verify impact before touching GitHub/Gitee repositories.
 - `Export Log` writes UTF-8 `.log` with an operation header (tag/dry-run/safe-restore/prefix/workspace/selected repos) plus the full log body.
 - `Clear Log` clears the current log panel quickly before a new run.
+- `Auto Export` writes log files automatically after create/restore/update operations.
+- Auto export files are stored in `prj-initer/logs/` and named `tagmanager_auto_<operation>_<ok|fail>_<timestamp>.log`.
+- Export header also includes trigger, success state, output path, and retention policy metadata.
+- `KeepDays` controls auto-cleanup for old `.log` files in the logs folder (default 30 days).
 
 ## Notes
 - Tag operations work for both GitHub and Gitee remotes because all operations use git CLI.
