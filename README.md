@@ -22,6 +22,30 @@ dotnet run --project .\src\ProjectInitializer\ProjectInitializer.csproj
 dotnet run --project .\src\TagManager\TagManager.csproj
 ```
 
+## One-Click Launchers
+- `launch.cmd`: interactive menu to choose ProjectInitializer or TagManager.
+- `start-initializer.cmd`: directly launch ProjectInitializer.
+- `start-tagmanager.cmd`: directly launch TagManager.
+- `launch.ps1`: script entry (supports `menu|initializer|tagmanager`, optional `-Build`).
+
+Examples:
+```powershell
+.\launch.ps1 initializer -Build
+.\launch.ps1 tagmanager
+```
+
+## ProjectInitializer Branch UX
+- Base branch column is a dropdown per submodule.
+- Remote branches are loaded on-demand when clicking the dropdown cell.
+- Branch list is cached by remote URL.
+- `Refresh Selected Branches` button force-refreshes selected rows (or all included rows when no row selected).
+
+## TagManager Safe Restore
+- `Safe Restore` is enabled by default.
+- Restore operation checks each repository is clean first.
+- In safe mode, restore runs: `checkout -B <prefix>/<tag> <tag>` to avoid detached HEAD.
+- Branch prefix is configurable (default: `restore`).
+
 ## Notes
 - Tag operations work for both GitHub and Gitee remotes because all operations use git CLI.
 - To create GitHub remote repositories, run `gh auth login` first.

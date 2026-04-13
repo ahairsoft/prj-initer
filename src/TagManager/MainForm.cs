@@ -7,6 +7,8 @@ public sealed class MainForm : Form
 {
     private readonly TextBox _txtRoot = new();
     private readonly TextBox _txtTag = new();
+    private readonly CheckBox _chkSafeRestore = new();
+    private readonly TextBox _txtRestoreBranchPrefix = new();
     private readonly DataGridView _grid = new();
     private readonly RichTextBox _log = new();
 
@@ -84,9 +86,19 @@ public sealed class MainForm : Form
         _btnRestore.Click += async (_, _) => await RestoreToTagAsync();
         _btnUpdateTag.Click += async (_, _) => await UpdateTagsAsync();
 
+        _chkSafeRestore.Text = "Safe Restore";
+        _chkSafeRestore.Checked = true;
+        _chkSafeRestore.Width = 110;
+
+        _txtRestoreBranchPrefix.Width = 130;
+        _txtRestoreBranchPrefix.Text = "restore";
+
         op.Controls.Add(_btnTag);
         op.Controls.Add(_btnRestore);
         op.Controls.Add(_btnUpdateTag);
+        op.Controls.Add(_chkSafeRestore);
+        op.Controls.Add(new Label { Text = "Branch Prefix", AutoSize = true, Padding = new Padding(8, 8, 4, 0) });
+        op.Controls.Add(_txtRestoreBranchPrefix);
 
         root.Controls.Add(op, 0, 1);
 
@@ -216,15 +228,36 @@ public sealed class MainForm : Form
         await RunWithUiLock(async () =>
         {
             var tag = GetTagOrThrow();
+            var safeRestore = _chkSafeRestore.Checked;
+            var branchPrefix = (_txtRestoreBranchPrefix.Text ?? string.Empty).Trim();
+            if (safeRestore && string.IsNullOrWhiteSpace(branchPrefix))
+            {
+                branchPrefix = "restore";
+            }
+
             var selected = _rows.Where(r => r.Use).ToList();
 
             await Task.Run(() =>
             {
                 foreach (var repo in selected)
                 {
-                    AppendLog($"[{repo.Name}] checkout {tag}");
+                    EnsureCleanWorkingTree(repo);
                     RunOrThrow(GitHelper.RunGit("fetch --tags", repo.Path), repo.Name, "fetch tags");
-                    RunOrThrow(GitHelper.RunGit($"checkout {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "checkout tag");
+
+                    if (safeRestore)
+                    {
+                        var restoreBranch = BuildRestoreBranchName(branchPrefix, tag);
+                        AppendLog($"[{repo.Name}] safe restore {tag} -> {restoreBranch}");
+                        RunOrThrow(
+                            GitHelper.RunGit($"checkout -B {GitHelper.EscapeArg(restoreBranch)} {GitHelper.EscapeArg(tag)}", repo.Path),
+                            repo.Name,
+                            "checkout restore branch");
+                    }
+                    else
+                    {
+                        AppendLog($"[{repo.Name}] checkout {tag}");
+                        RunOrThrow(GitHelper.RunGit($"checkout {GitHelper.EscapeArg(tag)}", repo.Path), repo.Name, "checkout tag");
+                    }
                 }
             });
 
@@ -276,6 +309,38 @@ public sealed class MainForm : Form
         }
 
         return tag;
+    }
+
+    private static string BuildRestoreBranchName(string prefix, string tag)
+    {
+        static string Sanitize(string value)
+        {
+            var invalid = Path.GetInvalidFileNameChars().Concat(new[] { '~', '^', ':', '?', '*', '[', '\\' }).ToHashSet();
+            var chars = value
+                .Select(ch => invalid.Contains(ch) || ch == '/' ? '-' : ch)
+                .ToArray();
+
+            var sanitized = new string(chars).Trim().Trim('-').Trim('.');
+            return string.IsNullOrWhiteSpace(sanitized) ? "tag" : sanitized;
+        }
+
+        var safePrefix = Sanitize(prefix);
+        var safeTag = Sanitize(tag);
+        return $"{safePrefix}/{safeTag}";
+    }
+
+    private void EnsureCleanWorkingTree(RepoRow repo)
+    {
+        var status = GitHelper.RunGit("status --porcelain", repo.Path);
+        if (!status.IsSuccess)
+        {
+            throw new InvalidOperationException($"[{repo.Name}] failed to check working tree: {status.StdErr}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.StdOut))
+        {
+            throw new InvalidOperationException($"[{repo.Name}] working tree not clean. Please commit/stash changes before restore.");
+        }
     }
 
     private void RunOrThrow(CommandResult result, string repoName, string operation)

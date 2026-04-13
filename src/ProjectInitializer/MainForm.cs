@@ -14,12 +14,17 @@ public sealed class MainForm : Form
     private readonly ComboBox _cmbVisibility = new();
     private readonly DataGridView _grid = new();
     private readonly RichTextBox _log = new();
+    private readonly Dictionary<string, List<string>> _branchOptionsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _branchOptionsCacheLock = new();
 
     private readonly BindingList<SubmoduleRow> _rows = new();
 
     private Button _btnReload = null!;
+    private Button _btnRefreshBranches = null!;
     private Button _btnResolveBranches = null!;
     private Button _btnInit = null!;
+    private DataGridViewComboBoxColumn _colBaseBranch = null!;
+    private bool _isRefreshingBranchOnClick;
 
     public MainForm()
     {
@@ -85,10 +90,12 @@ public sealed class MainForm : Form
         _cmbVisibility.SelectedIndex = 0;
 
         _btnReload = new Button { Text = "Reload Submodules", Width = 160, Height = 30 };
+        _btnRefreshBranches = new Button { Text = "Refresh Selected Branches", Width = 200, Height = 30 };
         _btnResolveBranches = new Button { Text = "Resolve Default Branch", Width = 180, Height = 30 };
         _btnInit = new Button { Text = "Start Initialization", Width = 180, Height = 32 };
 
         _btnReload.Click += (_, _) => ReloadSubmodules();
+        _btnRefreshBranches.Click += async (_, _) => await RefreshSelectedRowsBranchesAsync();
         _btnResolveBranches.Click += async (_, _) => await ResolveDefaultBranchesAsync();
         _btnInit.Click += async (_, _) => await StartInitializationAsync();
 
@@ -96,6 +103,7 @@ public sealed class MainForm : Form
         actionRow.Controls.Add(new Label { Text = "Visibility", AutoSize = true, Padding = new Padding(8, 8, 0, 0) });
         actionRow.Controls.Add(_cmbVisibility);
         actionRow.Controls.Add(_btnReload);
+        actionRow.Controls.Add(_btnRefreshBranches);
         actionRow.Controls.Add(_btnResolveBranches);
         actionRow.Controls.Add(_btnInit);
 
@@ -108,6 +116,9 @@ public sealed class MainForm : Form
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.DataSource = _rows;
+        _grid.DataError += (_, e) => e.ThrowException = false;
+        _grid.DataBindingComplete += (_, _) => RefreshBaseBranchCells();
+        _grid.CellClick += async (_, e) => await HandleBaseBranchCellClickAsync(e);
 
         _grid.Columns.Add(new DataGridViewCheckBoxColumn
         {
@@ -136,12 +147,16 @@ public sealed class MainForm : Form
             Width = 260,
             ReadOnly = true
         });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        _colBaseBranch = new DataGridViewComboBoxColumn
         {
             HeaderText = "Base Branch",
             DataPropertyName = nameof(SubmoduleRow.Branch),
-            Width = 140
-        });
+            Width = 140,
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            FlatStyle = FlatStyle.Standard,
+            SortMode = DataGridViewColumnSortMode.NotSortable
+        };
+        _grid.Columns.Add(_colBaseBranch);
         _grid.Columns.Add(new DataGridViewTextBoxColumn
         {
             HeaderText = "New Branch (Optional)",
@@ -211,6 +226,8 @@ public sealed class MainForm : Form
         }
 
         AppendLog($"Loaded {_rows.Count} submodules from .gitmodules");
+        RefreshBaseBranchCells();
+        AppendLog("Base Branch dropdown uses on-demand remote loading with cache.");
     }
 
     private async Task ResolveDefaultBranchesAsync()
@@ -229,7 +246,11 @@ public sealed class MainForm : Form
                     }
 
                     var branch = GitHelper.GetRemoteDefaultBranch(row.Url);
-                    BeginInvoke(() => row.Branch = branch);
+                    BeginInvoke(() =>
+                    {
+                        row.Branch = branch;
+                        RefreshBaseBranchCell(row);
+                    });
                     AppendLog($"{row.Name}: default branch = {branch}");
                 }
             });
@@ -398,6 +419,7 @@ public sealed class MainForm : Form
     private void SetUiEnabled(bool enabled)
     {
         _btnReload.Enabled = enabled;
+        _btnRefreshBranches.Enabled = enabled;
         _btnResolveBranches.Enabled = enabled;
         _btnInit.Enabled = enabled;
         _grid.Enabled = enabled;
@@ -413,6 +435,215 @@ public sealed class MainForm : Form
 
         _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
         _log.ScrollToCaret();
+    }
+
+    private async Task RefreshSelectedRowsBranchesAsync()
+    {
+        await RunWithUiLock(async () =>
+        {
+            var selectedRows = _grid.SelectedRows
+                .Cast<DataGridViewRow>()
+                .Select(x => x.DataBoundItem as SubmoduleRow)
+                .Where(x => x != null)
+                .Cast<SubmoduleRow>()
+                .ToList();
+
+            if (selectedRows.Count == 0)
+            {
+                selectedRows = _rows.Where(x => x.Include).ToList();
+            }
+
+            if (selectedRows.Count == 0)
+            {
+                AppendLog("No submodule rows selected for branch refresh.");
+                return;
+            }
+
+            AppendLog($"Refreshing branches for {selectedRows.Count} row(s)...");
+            foreach (var row in selectedRows)
+            {
+                if (string.IsNullOrWhiteSpace(row.Url))
+                {
+                    continue;
+                }
+
+                await RefreshRemoteBranchesForRowAsync(row, forceRefresh: true, CancellationToken.None);
+            }
+
+            AppendLog("Selected branch refresh completed.");
+        });
+    }
+
+    private async Task HandleBaseBranchCellClickAsync(DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != _colBaseBranch.Index || _isRefreshingBranchOnClick)
+        {
+            return;
+        }
+
+        if (_grid.Rows[e.RowIndex].DataBoundItem is not SubmoduleRow row || string.IsNullOrWhiteSpace(row.Url))
+        {
+            return;
+        }
+
+        _isRefreshingBranchOnClick = true;
+        try
+        {
+            await RefreshRemoteBranchesForRowAsync(row, forceRefresh: false, CancellationToken.None);
+
+            if (IsDisposed || !IsHandleCreated || e.RowIndex >= _grid.Rows.Count)
+            {
+                return;
+            }
+
+            _grid.CurrentCell = _grid.Rows[e.RowIndex].Cells[_colBaseBranch.Index];
+            _grid.BeginEdit(true);
+
+            if (_grid.EditingControl is ComboBox comboBox)
+            {
+                comboBox.DroppedDown = true;
+            }
+        }
+        finally
+        {
+            _isRefreshingBranchOnClick = false;
+        }
+    }
+
+    private async Task RefreshRemoteBranchesForRowAsync(SubmoduleRow row, bool forceRefresh, CancellationToken token)
+    {
+        var url = row.Url?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        if (!forceRefresh)
+        {
+            lock (_branchOptionsCacheLock)
+            {
+                if (_branchOptionsCache.TryGetValue(url, out var cached) && cached.Count > 0)
+                {
+                    if (InvokeRequired)
+                    {
+                        BeginInvoke(() => RefreshBaseBranchCell(row));
+                    }
+                    else
+                    {
+                        RefreshBaseBranchCell(row);
+                    }
+
+                    return;
+                }
+            }
+        }
+
+        var branches = await Task.Run(() => GitHelper.ListRemoteBranches(url), token);
+        if (branches.Count == 0)
+        {
+            branches.Add(string.IsNullOrWhiteSpace(row.Branch) ? "main" : row.Branch.Trim());
+        }
+
+        lock (_branchOptionsCacheLock)
+        {
+            _branchOptionsCache[url] = branches;
+        }
+
+        AppendLog($"{row.Name}: {(forceRefresh ? "refreshed" : "loaded")} {branches.Count} remote branches");
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => RefreshBaseBranchCell(row));
+        }
+        else
+        {
+            RefreshBaseBranchCell(row);
+        }
+    }
+
+    private void RefreshBaseBranchCells()
+    {
+        foreach (DataGridViewRow gridRow in _grid.Rows)
+        {
+            if (gridRow.DataBoundItem is not SubmoduleRow row)
+            {
+                continue;
+            }
+
+            if (gridRow.Cells[_colBaseBranch.Index] is not DataGridViewComboBoxCell branchCell)
+            {
+                continue;
+            }
+
+            List<string>? options = null;
+            lock (_branchOptionsCacheLock)
+            {
+                if (_branchOptionsCache.TryGetValue(row.Url, out var cached))
+                {
+                    options = cached;
+                }
+            }
+
+            ApplyBaseBranchOptions(branchCell, row, options);
+        }
+    }
+
+    private void RefreshBaseBranchCell(SubmoduleRow row)
+    {
+        foreach (DataGridViewRow gridRow in _grid.Rows)
+        {
+            if (!ReferenceEquals(gridRow.DataBoundItem, row))
+            {
+                continue;
+            }
+
+            if (gridRow.Cells[_colBaseBranch.Index] is not DataGridViewComboBoxCell branchCell)
+            {
+                break;
+            }
+
+            List<string>? options = null;
+            lock (_branchOptionsCacheLock)
+            {
+                if (_branchOptionsCache.TryGetValue(row.Url, out var cached))
+                {
+                    options = cached;
+                }
+            }
+
+            ApplyBaseBranchOptions(branchCell, row, options);
+            break;
+        }
+    }
+
+    private static void ApplyBaseBranchOptions(DataGridViewComboBoxCell cell, SubmoduleRow row, IReadOnlyCollection<string>? options)
+    {
+        var selectedBranch = string.IsNullOrWhiteSpace(row.Branch) ? "main" : row.Branch.Trim();
+
+        var branchList = (options ?? Array.Empty<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!branchList.Contains(selectedBranch, StringComparer.OrdinalIgnoreCase))
+        {
+            branchList.Insert(0, selectedBranch);
+        }
+
+        if (branchList.Count == 0)
+        {
+            branchList.Add("main");
+        }
+
+        cell.DataSource = null;
+        cell.Items.Clear();
+        cell.DataSource = branchList;
+
+        if (string.IsNullOrWhiteSpace(row.Branch))
+        {
+            row.Branch = branchList[0];
+        }
     }
 
     private sealed class SubmoduleRow : INotifyPropertyChanged
