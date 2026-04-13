@@ -1,5 +1,6 @@
 using Shared;
 using System.ComponentModel;
+using System.Text;
 
 namespace TagManager;
 
@@ -19,6 +20,8 @@ public sealed class MainForm : Form
     private Button _btnTag = null!;
     private Button _btnRestore = null!;
     private Button _btnUpdateTag = null!;
+    private Button _btnExportLog = null!;
+    private Button _btnClearLog = null!;
 
     public MainForm()
     {
@@ -82,10 +85,14 @@ public sealed class MainForm : Form
         _btnTag = new Button { Text = "Create Tags", Width = 120, Height = 30 };
         _btnRestore = new Button { Text = "Restore To Tag", Width = 130, Height = 30 };
         _btnUpdateTag = new Button { Text = "Update Tags", Width = 120, Height = 30 };
+        _btnExportLog = new Button { Text = "Export Log", Width = 110, Height = 30 };
+        _btnClearLog = new Button { Text = "Clear Log", Width = 90, Height = 30 };
 
         _btnTag.Click += async (_, _) => await CreateTagsAsync();
         _btnRestore.Click += async (_, _) => await RestoreToTagAsync();
         _btnUpdateTag.Click += async (_, _) => await UpdateTagsAsync();
+        _btnExportLog.Click += (_, _) => ExportLog();
+        _btnClearLog.Click += (_, _) => _log.Clear();
 
         _chkSafeRestore.Text = "Safe Restore";
         _chkSafeRestore.Checked = true;
@@ -101,6 +108,8 @@ public sealed class MainForm : Form
         op.Controls.Add(_btnTag);
         op.Controls.Add(_btnRestore);
         op.Controls.Add(_btnUpdateTag);
+        op.Controls.Add(_btnExportLog);
+        op.Controls.Add(_btnClearLog);
         op.Controls.Add(_chkDryRun);
         op.Controls.Add(_chkSafeRestore);
         op.Controls.Add(new Label { Text = "Branch Prefix", AutoSize = true, Padding = new Padding(8, 8, 4, 0) });
@@ -386,6 +395,36 @@ public sealed class MainForm : Form
         }
     }
 
+    private void ExportLog()
+    {
+        if (string.IsNullOrWhiteSpace(_log.Text))
+        {
+            MessageBox.Show("Log is empty.", "Export Log", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var defaultFileName = $"tagmanager_{DateTime.Now:yyyyMMdd_HHmmss}.log";
+        var defaultDir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export TagManager Log",
+            Filter = "Log Files (*.log)|*.log|Text Files (*.txt)|*.txt|All Files (*.*)|*.*",
+            FileName = defaultFileName,
+            InitialDirectory = Directory.Exists(defaultDir) ? defaultDir : Environment.CurrentDirectory,
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+        {
+            return;
+        }
+
+        File.WriteAllText(dialog.FileName, _log.Text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AppendLog($"Log exported: {dialog.FileName}");
+        MessageBox.Show("Log exported successfully.", "Export Log", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
     private async Task RunWithUiLock(Func<Task> action)
     {
         SetUiEnabled(false);
@@ -410,6 +449,8 @@ public sealed class MainForm : Form
         _btnTag.Enabled = enabled;
         _btnRestore.Enabled = enabled;
         _btnUpdateTag.Enabled = enabled;
+        _btnExportLog.Enabled = enabled;
+        _btnClearLog.Enabled = enabled;
         _grid.Enabled = enabled;
     }
 
