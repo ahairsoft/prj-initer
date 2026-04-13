@@ -420,9 +420,30 @@ public sealed class MainForm : Form
             return;
         }
 
-        File.WriteAllText(dialog.FileName, _log.Text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        var exportText = BuildExportContent();
+        File.WriteAllText(dialog.FileName, exportText, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         AppendLog($"Log exported: {dialog.FileName}");
         MessageBox.Show("Log exported successfully.", "Export Log", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private string BuildExportContent()
+    {
+        var sb = new StringBuilder();
+        var selectedRepos = _rows.Where(x => x.Use).Select(x => x.Name).OrderBy(x => x).ToList();
+
+        sb.AppendLine("# TagManager Export Log");
+        sb.AppendLine($"GeneratedAt: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($"WorkspaceRoot: {_txtRoot.Text.Trim()}");
+        sb.AppendLine($"TagContent: {_txtTag.Text.Trim()}");
+        sb.AppendLine($"DryRun: {_chkDryRun.Checked}");
+        sb.AppendLine($"SafeRestore: {_chkSafeRestore.Checked}");
+        sb.AppendLine($"RestoreBranchPrefix: {_txtRestoreBranchPrefix.Text.Trim()}");
+        sb.AppendLine($"SelectedRepoCount: {selectedRepos.Count}");
+        sb.AppendLine($"SelectedRepos: {(selectedRepos.Count == 0 ? "(none)" : string.Join(", ", selectedRepos))}");
+        sb.AppendLine(new string('-', 80));
+        sb.AppendLine(_log.Text);
+
+        return sb.ToString();
     }
 
     private async Task RunWithUiLock(Func<Task> action)

@@ -52,7 +52,7 @@ Examples:
 - `Dry Run` executes no git write operations and prints the exact commands to the log.
 - Supported for create tags, restore to tag, and update tags workflows.
 - Useful to verify impact before touching GitHub/Gitee repositories.
-- `Export Log` writes the current log panel content to a UTF-8 `.log` file.
+- `Export Log` writes UTF-8 `.log` with an operation header (tag/dry-run/safe-restore/prefix/workspace/selected repos) plus the full log body.
 - `Clear Log` clears the current log panel quickly before a new run.
 
 ## Notes
